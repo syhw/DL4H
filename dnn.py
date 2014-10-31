@@ -515,7 +515,7 @@ def add_fit_and_score(class_to_chg):
 
 def train_models(x_train, y_train, x_test, y_test, n_features, n_outs,
         x_dev=None, y_dev=None,
-        use_dropout=True, n_epochs=50, numpy_rng=None,
+        use_dropout=False, n_epochs=100, numpy_rng=None,
         svms=False, nb=False, deepnn=True,
         verbose=False, plot=False, name=''):
     if svms:
@@ -663,7 +663,12 @@ if __name__ == "__main__":
 
         train_models(x_train, y_train, x_test, y_test, X.shape[1],
                      len(set(y)), numpy_rng=numpy.random.RandomState(123),
-                     verbose=True, plot=True, name='mnist')
+                     use_dropout=False,
+                     verbose=True, plot=True, name='mnist_L2')
+        train_models(x_train, y_train, x_test, y_test, X.shape[1],
+                     len(set(y)), numpy_rng=numpy.random.RandomState(123),
+                     use_dropout=True,
+                     verbose=True, plot=True, name='mnist_dropout')
 
     if DIGITS:
         digits = datasets.load_digits()
