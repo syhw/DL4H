@@ -193,6 +193,7 @@ class NeuralNet(object):
                  layers_sizes=[1024, 1024, 1024, 1024],
                  n_outs=62*3,
                  rho=0.95, eps=1.E-6,
+                 momentum=0.9, step_adapt_alpha=1.E-2,
                  debugprint=False):
         """
         Basic Neural Net class
@@ -202,10 +203,14 @@ class NeuralNet(object):
         self.n_layers = len(layers_types)
         self.layers_types = layers_types
         assert self.n_layers > 0
-        self._rho = rho  # ``momentum'' for adadelta
-        self._eps = eps  # epsilon for adadelta
+        self._rho = rho  # ``momentum'' for adadelta (and discount/decay for RMSprop)
+        self._eps = eps  # epsilon for adadelta (and for RMSprop)
+        self._momentum = momentum  # for RMSProp
         self._accugrads = []  # for adadelta
         self._accudeltas = []  # for adadelta
+        self._avggrads = []  # for RMSprop in the Alex Graves' variant
+        self._stepadapts = []  # for RMSprop with step adaptations
+        self._stepadapt_alpha = step_adapt_alpha
 
         if theano_rng == None:
             theano_rng = RandomStreams(numpy_rng.randint(2 ** 30))
@@ -228,7 +233,11 @@ class NeuralNet(object):
                 'accugrad') for t in this_layer.params])
             self._accudeltas.extend([build_shared_zeros(t.shape.eval(),
                 'accudelta') for t in this_layer.params])
-
+            self._avggrads.extend([build_shared_zeros(t.shape.eval(),
+                'avggrad') for t in this_layer.params])
+            self._stepadapts.extend([shared(value=numpy.ones(t.shape.eval(),
+                dtype=theano.config.floatX),
+                name='stepadapt', borrow=True) for t in this_layer.params])
             self.layers.append(this_layer)
             layer_input = this_layer.output
 
@@ -311,6 +320,43 @@ class NeuralNet(object):
 
         train_fn = theano.function(inputs=[theano.Param(batch_x),
                                            theano.Param(batch_y)],
+                                   outputs=self.mean_cost,
+                                   updates=updates,
+                                   givens={self.x: batch_x, self.y: batch_y})
+
+        return train_fn
+
+    def get_rmsprop_trainer(self, with_step_adapt=True, nesterov=False):  # TODO Nesterov momentum
+        """ Returns an RmsProp Nesterov (Sutskever 2013) trainer using
+        self._rho, self._eps and self._momentum params. """
+        batch_x = T.fmatrix('batch_x')
+        batch_y = T.ivector('batch_y')
+        learning_rate = T.fscalar('lr')  # learning rate
+        gparams = T.grad(self.mean_cost, self.params)
+        updates = OrderedDict()
+        for accugrad, avggrad, accudelta, sa, param, gparam in zip(
+                self._accugrads, self._avggrads, self._accudeltas,
+                self._stepadapts, self.params, gparams):
+            acc_grad = self._rho * accugrad + (1 - self._rho) * gparam * gparam
+            avg_grad = self._rho * avggrad + (1 - self._rho) * gparam  # this decay/discount (self._rho) should differ from the one of the line above
+            ###scaled_grad = gparam / T.sqrt(acc_grad + self._eps)  # original RMSprop gradient scaling
+            scaled_grad = gparam / T.sqrt(acc_grad - avg_grad**2 + self._eps)  # Alex Graves' RMSprop variant (divide by a "running stddev" of the updates)
+            if with_step_adapt:
+                incr = sa * (1. + self._stepadapt_alpha)
+                decr = sa * (1. - self._stepadapt_alpha)
+                ###steps = sa * T.switch(accudelta * -gparam >= 0, incr, decr)
+                steps = T.clip(T.switch(accudelta * -gparam >= 0, incr, decr), self._eps, 1./self._eps)  # bad overloading of self._eps!
+                scaled_grad = steps * scaled_grad
+                updates[sa] = steps
+            dx = self._momentum * accudelta + learning_rate * scaled_grad
+            updates[param] = param + dx
+            updates[accugrad] = acc_grad
+            updates[avggrad] = avg_grad
+            updates[accudelta] = dx
+
+        train_fn = theano.function(inputs=[theano.Param(batch_x),
+                                           theano.Param(batch_y),
+                                           theano.Param(learning_rate)],
                                    outputs=self.mean_cost,
                                    updates=updates,
                                    givens={self.x: batch_x, self.y: batch_y})
@@ -440,6 +486,9 @@ def add_fit_and_score(class_to_chg):
             train_fn = self.get_adagrad_trainer()
         elif method == 'adadelta':
             train_fn = self.get_adadelta_trainer()
+        elif method == 'rmsprop':
+            train_fn = self.get_rmsprop_trainer(with_step_adapt=False,
+                    nesterov=False)
         train_set_iterator = DatasetMiniBatchIterator(x_train, y_train)
         dev_set_iterator = DatasetMiniBatchIterator(x_dev, y_dev)
         train_scoref = self.score_classif(train_set_iterator)
@@ -455,6 +504,8 @@ def add_fit_and_score(class_to_chg):
             self._updates = []
 
         init_lr = INIT_LR
+        #if method == 'rmsprop':
+        #    init_lr = 1.E-4  # TODO REMOVE HACK
         n_seen = 0
         while epoch < max_epochs:
             #lr = init_lr / (1 + init_lr * L2_LAMBDA * math.log(1+n_seen))
@@ -466,11 +517,13 @@ def add_fit_and_score(class_to_chg):
             avg_costs = []
             timer = time.time()
             for x, y in train_set_iterator:
-                if method == 'sgd' or method == 'adagrad':
+                if method == 'sgd' or method == 'adagrad' or method == 'rmsprop':
                     #avg_cost = train_fn(x, y, lr=1.E-2)
                     avg_cost = train_fn(x, y, lr=lr)
                 elif method == 'adadelta':
                     avg_cost = train_fn(x, y)
+                elif method == 'rmsprop':
+                    avg_cost = train_fn(x, y, lr=lr)
                 if type(avg_cost) == list:
                     avg_costs.append(avg_cost[0])
                 else:
@@ -561,10 +614,10 @@ def train_models(x_train, y_train, x_test, y_test, n_features, n_outs,
             else:
                 print("Simple (regularized) DNN")
                 return RegularizedNet(numpy_rng=numpy_rng, n_ins=n_features,
-                    #layers_types=[LogisticRegression],
-                    #layers_sizes=[],
-                    layers_types=[ReLU, ReLU, ReLU, LogisticRegression],
-                    layers_sizes=[1000, 1000, 1000],
+                    layers_types=[LogisticRegression],
+                    layers_sizes=[],
+                    #layers_types=[ReLU, ReLU, ReLU, LogisticRegression],
+                    #layers_sizes=[1000, 1000, 1000],
                     #layers_types=[ReLU, LogisticRegression],
                     #layers_sizes=[200],
                     n_outs=n_outs,
@@ -579,8 +632,9 @@ def train_models(x_train, y_train, x_test, y_test, n_features, n_outs,
         ax3 = plt.subplot(223)
         ax4 = plt.subplot(224)  # TODO updates of the weights
         #methods = ['sgd', 'adagrad', 'adadelta']
-        methods = ['adagrad', 'adadelta']
-        #methods = ['adadelta']
+        #methods = ['adagrad', 'adadelta']
+        methods = ['rmsprop', 'adadelta']
+        #methods = ['rmsprop', 'adadelta', 'adagrad']
         for method in methods:
             dnn = new_dnn(use_dropout)
             print dnn
@@ -663,12 +717,12 @@ if __name__ == "__main__":
 
         train_models(x_train, y_train, x_test, y_test, X.shape[1],
                      len(set(y)), numpy_rng=numpy.random.RandomState(123),
-                     use_dropout=False,
+                     use_dropout=False, n_epochs=20,
                      verbose=True, plot=True, name='mnist_L2')
-        train_models(x_train, y_train, x_test, y_test, X.shape[1],
-                     len(set(y)), numpy_rng=numpy.random.RandomState(123),
-                     use_dropout=True,
-                     verbose=True, plot=True, name='mnist_dropout')
+        #train_models(x_train, y_train, x_test, y_test, X.shape[1],
+        #             len(set(y)), numpy_rng=numpy.random.RandomState(123),
+        #             use_dropout=True,
+        #             verbose=True, plot=True, name='mnist_dropout')
 
     if DIGITS:
         digits = datasets.load_digits()
