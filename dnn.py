@@ -193,7 +193,7 @@ class NeuralNet(object):
                  layers_sizes=[1024, 1024, 1024, 1024],
                  n_outs=62*3,
                  rho=0.95, eps=1.E-6,
-                 momentum=0.9, step_adapt_alpha=1.E-2,
+                 momentum=0.9, step_adapt_alpha=1.E-4,
                  debugprint=False):
         """
         Basic Neural Net class
@@ -343,12 +343,13 @@ class NeuralNet(object):
             scaled_grad = gparam / T.sqrt(acc_grad - avg_grad**2 + self._eps)  # Alex Graves' RMSprop variant (divide by a "running stddev" of the updates)
             if with_step_adapt:
                 incr = sa * (1. + self._stepadapt_alpha)
-                decr = sa * (1. - self._stepadapt_alpha)
+                #decr = sa * (1. - self._stepadapt_alpha)
+                decr = sa * (1. - 2*self._stepadapt_alpha)
                 ###steps = sa * T.switch(accudelta * -gparam >= 0, incr, decr)
                 steps = T.clip(T.switch(accudelta * -gparam >= 0, incr, decr), self._eps, 1./self._eps)  # bad overloading of self._eps!
                 scaled_grad = steps * scaled_grad
                 updates[sa] = steps
-            dx = self._momentum * accudelta + learning_rate * scaled_grad
+            dx = self._momentum * accudelta - learning_rate * scaled_grad
             updates[param] = param + dx
             updates[accugrad] = acc_grad
             updates[avggrad] = avg_grad
@@ -487,7 +488,7 @@ def add_fit_and_score(class_to_chg):
         elif method == 'adadelta':
             train_fn = self.get_adadelta_trainer()
         elif method == 'rmsprop':
-            train_fn = self.get_rmsprop_trainer(with_step_adapt=False,
+            train_fn = self.get_rmsprop_trainer(with_step_adapt=True,
                     nesterov=False)
         train_set_iterator = DatasetMiniBatchIterator(x_train, y_train)
         dev_set_iterator = DatasetMiniBatchIterator(x_dev, y_dev)
@@ -504,8 +505,8 @@ def add_fit_and_score(class_to_chg):
             self._updates = []
 
         init_lr = INIT_LR
-        #if method == 'rmsprop':
-        #    init_lr = 1.E-4  # TODO REMOVE HACK
+        if method == 'rmsprop':
+            init_lr = 1.E-6  # TODO REMOVE HACK
         n_seen = 0
         while epoch < max_epochs:
             #lr = init_lr / (1 + init_lr * L2_LAMBDA * math.log(1+n_seen))
