@@ -327,8 +327,8 @@ class NeuralNet(object):
         return train_fn
 
     def get_rmsprop_trainer(self, with_step_adapt=True, nesterov=False):  # TODO Nesterov momentum
-        """ Returns an RmsProp Nesterov (Sutskever 2013) trainer using
-        self._rho, self._eps and self._momentum params. """
+        """ Returns an RmsProp (possibly Nesterov) (Sutskever 2013) trainer
+        using self._rho, self._eps and self._momentum params. """
         batch_x = T.fmatrix('batch_x')
         batch_y = T.ivector('batch_y')
         learning_rate = T.fscalar('lr')  # learning rate
@@ -615,10 +615,10 @@ def train_models(x_train, y_train, x_test, y_test, n_features, n_outs,
             else:
                 print("Simple (regularized) DNN")
                 return RegularizedNet(numpy_rng=numpy_rng, n_ins=n_features,
-                    layers_types=[LogisticRegression],
-                    layers_sizes=[],
-                    #layers_types=[ReLU, ReLU, ReLU, LogisticRegression],
-                    #layers_sizes=[1000, 1000, 1000],
+                    #layers_types=[LogisticRegression],
+                    #layers_sizes=[],
+                    layers_types=[ReLU, ReLU, ReLU, LogisticRegression],
+                    layers_sizes=[1000, 1000, 1000],
                     #layers_types=[ReLU, LogisticRegression],
                     #layers_sizes=[200],
                     n_outs=n_outs,
