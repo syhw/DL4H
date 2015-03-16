@@ -126,11 +126,7 @@ class DatasetMiniBatchIterator(object):
                        self.y[i*self.batch_size:(i+1)*self.batch_size])
 
 
-#class PerceptronLoss: # TODO
-
-
-class LogisticRegression:
-    """ _Multi-class_ Logistic Regression """
+class Classifier(object):
     def __init__(self, rng, input, n_in, n_out, W=None, b=None):
         if W != None:
             self.W = W
@@ -141,6 +137,29 @@ class LogisticRegression:
         else:
             self.b = build_shared_zeros((n_out,), 'b')
         self.input = input
+        self.p_y_given_x = None
+        self.y_pred = None
+        self.output = self.y_pred
+        self.params = [self.W, self.b]
+
+    def training_cost(self, y):
+        return None
+
+    def errors(self, y):
+        if y.ndim != self.y_pred.ndim:
+            raise TypeError("!!! 'y' should have the same shape as 'self.y_pred'",
+                ("y", y.type, "y_pred", self.y_pred.type))
+        if y.dtype.startswith('int'):
+            return T.mean(T.neq(self.y_pred, y))
+        else:
+            print("!!! y should be of int type")
+            return T.mean(T.neq(self.y_pred, numpy.asarray(y, dtype='int')))
+
+
+class LogisticRegression(Classifier):
+    """ _Multi-class_ Logistic Regression """
+    def __init__(self, rng, input, n_in, n_out, W=None, b=None):
+        super(LogisticRegression, self).__init__(rng, input, n_in, n_out, W, b)
         self.p_y_given_x = T.nnet.softmax(T.dot(self.input, self.W) + self.b)
         self.y_pred = T.argmax(self.p_y_given_x, axis=1)
         self.output = self.y_pred
@@ -156,31 +175,30 @@ class LogisticRegression:
         """ Wrapper for standard name """
         return self.negative_log_likelihood(y)
 
-    def errors(self, y):
-        if y.ndim != self.y_pred.ndim:
-            raise TypeError("!!! 'y' should have the same shape as 'self.y_pred'",
-                ("y", y.type, "y_pred", self.y_pred.type))
-        if y.dtype.startswith('int'):
-            return T.mean(T.neq(self.y_pred, y))
-        else:
-            print("!!! y should be of int type")
-            return T.mean(T.neq(self.y_pred, numpy.asarray(y, dtype='int')))
 
-
-class HingeLoss(LogisticRegression):
-    """ _Multi-class_ Logistic Regression """
+class SVM(Classifier):
+    """ _Multi-class_ SVM """
     def __init__(self, rng, input, n_in, n_out, W=None, b=None):
-        super(HingeLoss, self).__init__(rng, input, n_in, n_out, W, b)
+        super(SVM, self).__init__(rng, input, n_in, n_out, W, b)
+        self.y_given_x = T.dot(self.input, self.W) + self.b
+        self.p_y_given_x = self.y_given_x / T.sum(self.y_given_x, axis=1)  # badly calibrated prob
+        self.y_pred = T.argmax(self.y_given_x, axis=1)
+        self.output = self.y_pred
+        self.params = [self.W, self.b]
+
+    def multiclass_SVM(self, y):
+        return T.sum(relu_f(self.y_given_x - self.y_given_x[:,y,None] + 1.), axis=1)
 
     def hinge_loss(self, y):
-        return -T.mean(T.log(self.p_y_given_x)[:,y]) # TODO
+        return T.mean(self.multiclass_SVM(y))
 
     def hinge_loss_sum(self, y):
-        return -T.sum(T.log(self.p_y_given_x)[:,y])
+        return T.sum(self.multiclass_SVM(y))
 
     def training_cost(self, y):
         """ Wrapper for standard name """
-        return self.negative_log_likelihood(y)
+        return self.hinge_loss(y)
+        #return T.mean(relu_f(self.y_given_x - self.y_given_x[:,y,None] + 1.))
 
     def errors(self, y):
         if y.ndim != self.y_pred.ndim:
