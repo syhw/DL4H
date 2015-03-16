@@ -11,13 +11,13 @@ from theano import shared
 from theano.tensor.shared_randomstreams import RandomStreams
 from collections import OrderedDict
 
-BATCH_SIZE = 100  # default batch size
+BATCH_SIZE = 200  # default batch size
 L2_LAMBDA = 1.    # default L2 regularization parameter
 INIT_LR = 0.01    # initial learning rate, try making it larger
 
 def relu_f(vec):
     """ Wrapper to quickly change the rectified linear unit function """
-    return (vec + abs(vec)) / 2.
+    return T.maximum(vec, 0.)
 
 
 def softplus_f(v):
@@ -89,6 +89,14 @@ class SoftPlus(Linear):
         super(SoftPlus, self).__init__(rng, input, n_in, n_out, W, b)
         self.pre_activation = self.output
         self.output = softplus_f(self.pre_activation)
+
+
+class BatchNormalizer(Linear):
+    def __init__(self, rng, input, n_in, n_out, W=None, b=None):
+        super(BatchNormalizer, self).__init__(rng, input, n_in, n_out, W, b)
+        self.input = input
+        x_tmp = (self.input - T.mean(self.input, axis=0)) / (T.std(self.input, axis=0) + 1.E-6)
+        self.output = T.dot(x_tmp, self.W) + self.b
 
 
 class DatasetMiniBatchIterator(object):
@@ -243,7 +251,7 @@ class NeuralNet(object):
 
         assert hasattr(self.layers[-1], 'training_cost')
         assert hasattr(self.layers[-1], 'errors')
-        self.mean_cost = self.layers[-1].negative_log_likelihood(self.y)
+        self.mean_cost = self.layers[-1].training_cost(self.y)
         self.cost = self.layers[-1].training_cost(self.y)
         if debugprint:
             theano.printing.debugprint(self.cost)
@@ -329,6 +337,7 @@ class NeuralNet(object):
     def get_rmsprop_trainer(self, with_step_adapt=True, nesterov=False):  # TODO Nesterov momentum
         """ Returns an RmsProp (possibly Nesterov) (Sutskever 2013) trainer
         using self._rho, self._eps and self._momentum params. """
+        # TODO CHECK
         batch_x = T.fmatrix('batch_x')
         batch_y = T.ivector('batch_y')
         learning_rate = T.fscalar('lr')  # learning rate
@@ -455,7 +464,7 @@ class DropoutNet(NeuralNet):
         assert hasattr(self.layers[-1], 'errors')
         # TODO standardize cost
         # these are the dropout costs
-        self.mean_cost = self.dropout_layers[-1].negative_log_likelihood(self.y)
+        self.mean_cost = self.dropout_layers[-1].training_cost(self.y)
         self.cost = self.dropout_layers[-1].training_cost(self.y)
 
         # these is the non-dropout errors
@@ -617,8 +626,14 @@ def train_models(x_train, y_train, x_test, y_test, n_features, n_outs,
                 return RegularizedNet(numpy_rng=numpy_rng, n_ins=n_features,
                     #layers_types=[LogisticRegression],
                     #layers_sizes=[],
-                    layers_types=[ReLU, ReLU, ReLU, LogisticRegression],
-                    layers_sizes=[1000, 1000, 1000],
+                    #layers_types=[SVM],
+                    #layers_sizes=[],
+                    #layers_types=[BatchNormalizer, ReLU, BatchNormalizer, ReLU, BatchNormalizer, ReLU, BatchNormalizer, LogisticRegression],
+                    #layers_sizes=[784, 1000, 1000, 1000, 1000, 1000, 1000],
+                    layers_types=[BatchNormalizer, ReLU, BatchNormalizer, LogisticRegression],
+                    layers_sizes=[784, 1000, 1000],
+                    #layers_types=[ReLU, LogisticRegression],
+                    #layers_sizes=[1000],
                     #layers_types=[ReLU, LogisticRegression],
                     #layers_sizes=[200],
                     n_outs=n_outs,
@@ -634,7 +649,8 @@ def train_models(x_train, y_train, x_test, y_test, n_features, n_outs,
         ax4 = plt.subplot(224)  # TODO updates of the weights
         #methods = ['sgd', 'adagrad', 'adadelta']
         #methods = ['adagrad', 'adadelta']
-        methods = ['rmsprop', 'adadelta']
+        #methods = ['rmsprop', 'adadelta']
+        methods = ['adadelta']
         #methods = ['rmsprop', 'adadelta', 'adagrad']
         for method in methods:
             dnn = new_dnn(use_dropout)
